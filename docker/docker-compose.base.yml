@@ -1,0 +1,22 @@
+version: "3.9"
+
+services:
+  api:
+    image: node:18-alpine
+    container_name: api_placeholder
+    command: ["sh", "-c", "while true; do sleep 3600; done"]
+    ports:
+      - "3000:3000"
+    networks:
+      - localnet
+
+  worker:
+    image: node:18-alpine
+    container_name: worker_placeholder
+    command: ["sh", "-c", "while true; do sleep 3600; done"]
+    networks:
+      - localnet
+
+networks:
+  localnet:
+    driver: bridge
