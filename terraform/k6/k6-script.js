@@ -50,8 +50,9 @@ export default function () {
   // Cálculo del índice global
   const globalIndex = (__VU - 1) * (options.iterations / options.vus) + __ITER;
 
+  let type = generateType(globalIndex);
   const payload = JSON.stringify({
-    type: generateType(globalIndex),
+    type: type,
     vehicle_plate: generateVehiclePlate(),
     coordinates: generateCoordinates(),
     status: "OK",
@@ -59,20 +60,19 @@ export default function () {
 
   const headers = { "Content-Type": "application/json" };
 
-  // const res = http.post('https://xstkjuct1f.execute-api.us-east-2.amazonaws.com/prod/event-notification', payload, { headers });
   const res = http.post(
-    "https://ec2bs53vyi.execute-api.us-east-1.amazonaws.com/prod/event-notification",
+    "https://bzlayjbvmj.execute-api.us-east-1.amazonaws.com/prod/event-notification",
     payload,
     { headers }
   );
 
   console.log(
     JSON.stringify({
-      globalIndex,
-      type: payload.type,
-      timestamp: new Date().toISOString(),
+      type: type,
+      // timestamp: new Date().toISOString(),
       status: res.status,
       duration: res.timings.duration,
+      globalIndex,
     })
   );
 

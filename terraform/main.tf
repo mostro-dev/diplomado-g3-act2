@@ -81,7 +81,6 @@ resource "aws_iam_role_policy_attachment" "lambda_sqs_receive_attach" {
   policy_arn = aws_iam_policy.sqs_receive_policy.arn
 }
 
-
 # ===================================================================================
 # SQS
 # ===================================================================================
@@ -118,8 +117,54 @@ resource "aws_lambda_function" "intake" {
       SQS_QUEUE_URL = aws_sqs_queue.events_queue.id
     }
   }
+}
 
-  # reserved_concurrent_executions = var.intake_reserved_concurrency
+# ===================================================================================
+# DYNAMODB TABLE
+# ===================================================================================
+
+resource "aws_dynamodb_table" "event_logs" {
+  name         = "vehicle_event_logs"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "vehicle_plate"
+  range_key    = "received_at_utc"
+
+  attribute {
+    name = "vehicle_plate"
+    type = "S"
+  }
+
+  attribute {
+    name = "received_at_utc"
+    type = "S"
+  }
+
+  tags = {
+    Environment = "prod"
+    Project     = "vehicle-events"
+  }
+}
+
+# ===================================================================================
+# PERMISOS PARA DYNAMODB EN LAMBDA ROLE
+# ===================================================================================
+
+resource "aws_iam_policy" "dynamodb_write_policy" {
+  name        = "lambda_dynamodb_write_policy"
+  description = "Allow Lambda Processor to write logs to DynamoDB"
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect   = "Allow",
+      Action   = ["dynamodb:PutItem"],
+      Resource = aws_dynamodb_table.event_logs.arn
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_dynamodb_write_attach" {
+  role       = aws_iam_role.lambda_role.name
+  policy_arn = aws_iam_policy.dynamodb_write_policy.arn
 }
 
 # ===================================================================================
@@ -138,10 +183,9 @@ resource "aws_lambda_function" "processor" {
     variables = {
       SOURCE_EMAIL      = var.source_email
       DESTINATION_EMAIL = var.destination_email
+      DYNAMO_TABLE_NAME = aws_dynamodb_table.event_logs.name
     }
   }
-
-  # reserved_concurrent_executions = var.processor_reserved_concurrency
 }
 
 resource "aws_lambda_event_source_mapping" "sqs_to_processor" {
@@ -150,11 +194,20 @@ resource "aws_lambda_event_source_mapping" "sqs_to_processor" {
   batch_size                         = 10
   maximum_batching_window_in_seconds = 0
   enabled                            = true
+
+  scaling_config {
+    maximum_concurrency = 6
+  }
 }
 
 # ===================================================================================
-# API GATEWAY
+# API GATEWAY + LOGGING
 # ===================================================================================
+
+resource "aws_cloudwatch_log_group" "apigw_access_logs" {
+  name              = "/aws/apigateway/${aws_apigatewayv2_api.http_api.name}-access"
+  retention_in_days = 3
+}
 
 resource "aws_apigatewayv2_api" "http_api" {
   name          = "emergency-events-api"
@@ -187,46 +240,26 @@ resource "aws_apigatewayv2_stage" "prod" {
   api_id      = aws_apigatewayv2_api.http_api.id
   name        = "prod"
   auto_deploy = true
-}
 
-# ===================================================================================
-# WAF (temporalmente sin asociación para evitar error en API Gateway v2)
-# ===================================================================================
-
-resource "aws_wafv2_web_acl" "rate_limit_acl" {
-  name        = "rate-limit-15-rps"
-  scope       = "REGIONAL"
-  description = "Limit 15 requests per second per IP"
-
-  default_action {
-    allow {}
+  access_log_settings {
+    destination_arn = aws_cloudwatch_log_group.apigw_access_logs.arn
+    format = jsonencode({
+      requestId               = "$context.requestId",
+      ip                      = "$context.identity.sourceIp",
+      requestTime             = "$context.requestTime",
+      httpMethod              = "$context.httpMethod",
+      routeKey                = "$context.routeKey",
+      status                  = "$context.status",
+      protocol                = "$context.protocol",
+      responseLength          = "$context.responseLength",
+      errorMessage            = "$context.error.message",
+      integrationErrorMessage = "$context.integrationErrorMessage"
+    })
   }
 
-  rule {
-    name     = "Limit15RPS"
-    priority = 1
-
-    statement {
-      rate_based_statement {
-        limit              = 900
-        aggregate_key_type = "IP"
-      }
-    }
-
-    action {
-      block {}
-    }
-
-    visibility_config {
-      sampled_requests_enabled   = true
-      cloudwatch_metrics_enabled = true
-      metric_name                = "Limit15RPS"
-    }
-  }
-
-  visibility_config {
-    sampled_requests_enabled   = true
-    cloudwatch_metrics_enabled = true
-    metric_name                = "RateLimitACL"
+  default_route_settings {
+    throttling_rate_limit  = 15
+    throttling_burst_limit = 2000
   }
 }
+
