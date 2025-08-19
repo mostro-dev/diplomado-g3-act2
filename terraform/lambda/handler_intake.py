@@ -1,6 +1,7 @@
 import json
 import os
 import boto3
+import uuid
 from datetime import datetime, timezone
 
 sqs = boto3.client("sqs")
@@ -15,6 +16,8 @@ def lambda_handler(event, context):
         if "vehicle_plate" not in body or "type" not in body:
             print("[Intake] Missing vehicle_plate or type in body")
 
+        # Generar un ID único por evento
+        body["id"] = str(uuid.uuid4())
         body["received_at_utc"] = datetime.now(timezone.utc).isoformat()
 
         event_type = body["type"].lower()
@@ -23,7 +26,8 @@ def lambda_handler(event, context):
         sqs.send_message(QueueUrl=target_queue, MessageBody=json.dumps(body))
 
         print(
-            f"[Intake] Routed {event_type} event for {body['vehicle_plate']} to {target_queue}")
+            f"[Intake] Routed {event_type} event {body['id']} for {body['vehicle_plate']} to {target_queue}"
+        )
 
         return {"statusCode": 200, "body": json.dumps({"message": "Event routed"})}
     except Exception as e:

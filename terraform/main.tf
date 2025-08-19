@@ -72,17 +72,15 @@ resource "aws_iam_policy" "sqs_send_policy" {
   description = "Allow Lambda Intake & Retry Processor to send messages to SQS"
   policy = jsonencode({
     Version = "2012-10-17",
-    Statement = [
-      {
-        Effect = "Allow",
-        Action = ["sqs:SendMessage", "sqs:SendMessageBatch"],
-        Resource = [
-          aws_sqs_queue.emergency_queue.arn,
-          aws_sqs_queue.position_queue.arn,
-          aws_sqs_queue.retry_queue.arn
-        ]
-      }
-    ]
+    Statement = [{
+      Effect = "Allow",
+      Action = ["sqs:SendMessage", "sqs:SendMessageBatch"],
+      Resource = [
+        aws_sqs_queue.emergency_queue.arn,
+        aws_sqs_queue.position_queue.arn,
+        aws_sqs_queue.retry_queue.arn
+      ]
+    }]
   })
 }
 
@@ -96,21 +94,19 @@ resource "aws_iam_policy" "sqs_receive_policy" {
   description = "Allow Lambda Processors to read messages from SQS"
   policy = jsonencode({
     Version = "2012-10-17",
-    Statement = [
-      {
-        Effect = "Allow",
-        Action = [
-          "sqs:ReceiveMessage",
-          "sqs:DeleteMessage",
-          "sqs:GetQueueAttributes"
-        ],
-        Resource = [
-          aws_sqs_queue.emergency_queue.arn,
-          aws_sqs_queue.position_queue.arn,
-          aws_sqs_queue.retry_queue.arn
-        ]
-      }
-    ]
+    Statement = [{
+      Effect = "Allow",
+      Action = [
+        "sqs:ReceiveMessage",
+        "sqs:DeleteMessage",
+        "sqs:GetQueueAttributes"
+      ],
+      Resource = [
+        aws_sqs_queue.emergency_queue.arn,
+        aws_sqs_queue.position_queue.arn,
+        aws_sqs_queue.retry_queue.arn
+      ]
+    }]
   })
 }
 
@@ -126,11 +122,11 @@ resource "aws_iam_role_policy_attachment" "lambda_sqs_receive_attach" {
 resource "aws_dynamodb_table" "event_logs" {
   name         = "vehicle_event_logs"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "vehicle_plate"
+  hash_key     = "id"
   range_key    = "received_at_utc"
 
   attribute {
-    name = "vehicle_plate"
+    name = "id"
     type = "S"
   }
 
@@ -151,8 +147,12 @@ resource "aws_iam_policy" "dynamodb_write_policy" {
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [{
-      Effect   = "Allow",
-      Action   = ["dynamodb:PutItem"],
+      Effect = "Allow",
+      Action = [
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:GetItem"
+      ],
       Resource = aws_dynamodb_table.event_logs.arn
     }]
   })
@@ -260,6 +260,9 @@ resource "aws_lambda_function" "retry_processor" {
     variables = {
       EMERGENCY_QUEUE_URL = aws_sqs_queue.emergency_queue.url
       POSITION_QUEUE_URL  = aws_sqs_queue.position_queue.url
+      RETRY_QUEUE_URL     = aws_sqs_queue.retry_queue.url
+      DYNAMODB_TABLE      = aws_dynamodb_table.event_logs.name
+      DYNAMO_TABLE_NAME   = aws_dynamodb_table.event_logs.name
     }
   }
 }

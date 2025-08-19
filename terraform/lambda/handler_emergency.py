@@ -1,9 +1,7 @@
 import os
 import json
 import boto3
-import binascii
-import time
-import random
+import uuid
 from datetime import datetime, timezone
 
 ses = boto3.client("ses", region_name=os.environ.get(
@@ -14,18 +12,6 @@ SOURCE_EMAIL = os.environ.get("SOURCE_EMAIL")
 DESTINATION_EMAIL = os.environ.get("DESTINATION_EMAIL")
 TABLE_NAME = os.environ.get("DYNAMO_TABLE_NAME")
 
-_counter = random.randint(0, 0xFFFFFF)
-
-
-def generate_object_id():
-    global _counter
-    timestamp = int(time.time())
-    random_bytes = os.urandom(5)
-    _counter = (_counter + 1) % 0xFFFFFF
-    counter_bytes = _counter.to_bytes(3, "big")
-    oid = timestamp.to_bytes(4, "big") + random_bytes + counter_bytes
-    return binascii.hexlify(oid).decode()
-
 
 def lambda_handler(event, context):
     table = dynamodb.Table(TABLE_NAME)
@@ -33,7 +19,7 @@ def lambda_handler(event, context):
     try:
         for record in event["Records"]:
             body = json.loads(record["body"])
-            document_id = generate_object_id()
+            document_id = str(uuid.uuid4())
 
             vehicle_plate = body.get("vehicle_plate", "Unknown")
             event_type = body.get("type", "Unknown")
@@ -54,17 +40,10 @@ def lambda_handler(event, context):
                 f"Email Sent At (UTC): {email_sent_at}\n"
                 f"Latitude: {latitude}, Longitude: {longitude}\n"
             )
-
-            ses.send_email(
-                Source=SOURCE_EMAIL,
-                Destination={"ToAddresses": [DESTINATION_EMAIL]},
-                Message={"Subject": {"Data": subject},
-                         "Body": {"Text": {"Data": body_text}}},
-            )
-
+            
             table.put_item(
                 Item={
-                    "_id": document_id,
+                    "id": document_id,
                     "vehicle_plate": vehicle_plate,
                     "event_type": event_type,
                     "received_at_utc": received_at,
@@ -73,6 +52,17 @@ def lambda_handler(event, context):
                     "longitude": longitude,
                 }
             )
+
+            ses.send_email(
+                Source=SOURCE_EMAIL,
+                Destination={"ToAddresses": [DESTINATION_EMAIL]},
+                Message={
+                    "Subject": {"Data": subject},
+                    "Body": {"Text": {"Data": body_text}}
+                },
+            )
+
+
 
             print(
                 f"[Emergency] Processed event {document_id} for {vehicle_plate}")
