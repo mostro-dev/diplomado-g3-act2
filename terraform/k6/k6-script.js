@@ -61,7 +61,7 @@ export default function () {
   const headers = { "Content-Type": "application/json" };
 
   const res = http.post(
-    "https://bzlayjbvmj.execute-api.us-east-1.amazonaws.com/prod/event-notification",
+    "https://9danyiqy7a.execute-api.us-east-1.amazonaws.com/prod/event-notification",
     payload,
     { headers }
   );
@@ -75,6 +75,17 @@ export default function () {
       globalIndex,
     })
   );
+
+  if (res.status !== 200) {
+    console.error(
+      JSON.stringify({
+        type: type,
+        status: res.status,
+        duration: res.timings.duration,
+        globalIndex,
+      })
+    );
+  }
 
   check(res, {
     "is status 200": (r) => r.status === 200,

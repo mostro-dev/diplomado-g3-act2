@@ -19,7 +19,7 @@ data "aws_caller_identity" "current" {}
 # ===================================================================================
 
 resource "aws_iam_role" "lambda_role" {
-  name = "lambda_emergency_role"
+  name = "lambda_vehicle_role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
@@ -41,16 +41,48 @@ resource "aws_iam_role_policy_attachment" "lambda_ses" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSESFullAccess"
 }
 
+# ===================================================================================
+# SQS
+# ===================================================================================
+
+resource "aws_sqs_queue" "emergency_queue" {
+  name                       = "emergency-events"
+  visibility_timeout_seconds = 60
+  message_retention_seconds  = 86400
+}
+
+resource "aws_sqs_queue" "position_queue" {
+  name                       = "position-events"
+  visibility_timeout_seconds = 60
+  message_retention_seconds  = 86400
+}
+
+resource "aws_sqs_queue" "retry_queue" {
+  name                       = "retry-events"
+  visibility_timeout_seconds = 60
+  message_retention_seconds  = 86400
+}
+
+# ===================================================================================
+# IAM POLICIES for SQS
+# ===================================================================================
+
 resource "aws_iam_policy" "sqs_send_policy" {
   name        = "lambda_sqs_send_policy"
-  description = "Allow Lambda Intake to send messages to SQS"
+  description = "Allow Lambda Intake & Retry Processor to send messages to SQS"
   policy = jsonencode({
     Version = "2012-10-17",
-    Statement = [{
-      Effect   = "Allow",
-      Action   = ["sqs:SendMessage", "sqs:SendMessageBatch"],
-      Resource = aws_sqs_queue.events_queue.arn
-    }]
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = ["sqs:SendMessage", "sqs:SendMessageBatch"],
+        Resource = [
+          aws_sqs_queue.emergency_queue.arn,
+          aws_sqs_queue.position_queue.arn,
+          aws_sqs_queue.retry_queue.arn
+        ]
+      }
+    ]
   })
 }
 
@@ -61,62 +93,30 @@ resource "aws_iam_role_policy_attachment" "lambda_sqs_send_attach" {
 
 resource "aws_iam_policy" "sqs_receive_policy" {
   name        = "lambda_sqs_receive_policy"
-  description = "Allow Lambda Processor to read messages from SQS"
+  description = "Allow Lambda Processors to read messages from SQS"
   policy = jsonencode({
     Version = "2012-10-17",
-    Statement = [{
-      Effect = "Allow",
-      Action = [
-        "sqs:ReceiveMessage",
-        "sqs:DeleteMessage",
-        "sqs:GetQueueAttributes"
-      ],
-      Resource = aws_sqs_queue.events_queue.arn
-    }]
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes"
+        ],
+        Resource = [
+          aws_sqs_queue.emergency_queue.arn,
+          aws_sqs_queue.position_queue.arn,
+          aws_sqs_queue.retry_queue.arn
+        ]
+      }
+    ]
   })
 }
 
 resource "aws_iam_role_policy_attachment" "lambda_sqs_receive_attach" {
   role       = aws_iam_role.lambda_role.name
   policy_arn = aws_iam_policy.sqs_receive_policy.arn
-}
-
-# ===================================================================================
-# SQS
-# ===================================================================================
-
-resource "aws_sqs_queue" "events_dlq" {
-  name                      = "vehicle-events-dlq"
-  message_retention_seconds = 1209600
-}
-
-resource "aws_sqs_queue" "events_queue" {
-  name                       = "vehicle-events"
-  visibility_timeout_seconds = 60
-  message_retention_seconds  = 86400
-  redrive_policy = jsonencode({
-    deadLetterTargetArn = aws_sqs_queue.events_dlq.arn
-    maxReceiveCount     = 5
-  })
-}
-
-# ===================================================================================
-# LAMBDA: INTAKE
-# ===================================================================================
-
-resource "aws_lambda_function" "intake" {
-  function_name = "vehicle_events_intake"
-  runtime       = "python3.12"
-  handler       = "handler_intake.lambda_handler"
-  role          = aws_iam_role.lambda_role.arn
-  filename      = "${path.module}/lambda_intake.zip"
-  timeout       = 5
-
-  environment {
-    variables = {
-      SQS_QUEUE_URL = aws_sqs_queue.events_queue.id
-    }
-  }
 }
 
 # ===================================================================================
@@ -145,13 +145,9 @@ resource "aws_dynamodb_table" "event_logs" {
   }
 }
 
-# ===================================================================================
-# PERMISOS PARA DYNAMODB EN LAMBDA ROLE
-# ===================================================================================
-
 resource "aws_iam_policy" "dynamodb_write_policy" {
   name        = "lambda_dynamodb_write_policy"
-  description = "Allow Lambda Processor to write logs to DynamoDB"
+  description = "Allow Lambda Processors to write logs to DynamoDB"
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [{
@@ -168,15 +164,36 @@ resource "aws_iam_role_policy_attachment" "lambda_dynamodb_write_attach" {
 }
 
 # ===================================================================================
-# LAMBDA: PROCESSOR
+# LAMBDA: INTAKE
 # ===================================================================================
 
-resource "aws_lambda_function" "processor" {
-  function_name = "vehicle_events_processor"
+resource "aws_lambda_function" "intake" {
+  function_name = "vehicle_events_intake"
   runtime       = "python3.12"
-  handler       = "handler_processor.lambda_handler"
+  handler       = "handler_intake.lambda_handler"
   role          = aws_iam_role.lambda_role.arn
-  filename      = "${path.module}/lambda_processor.zip"
+  filename      = "${path.module}/lambda_intake.zip"
+  timeout       = 5
+
+  environment {
+    variables = {
+      EMERGENCY_QUEUE_URL = aws_sqs_queue.emergency_queue.url
+      POSITION_QUEUE_URL  = aws_sqs_queue.position_queue.url
+      RETRY_QUEUE_URL     = aws_sqs_queue.retry_queue.url
+    }
+  }
+}
+
+# ===================================================================================
+# LAMBDAS: PROCESSORS
+# ===================================================================================
+
+resource "aws_lambda_function" "emergency_processor" {
+  function_name = "emergency_events_processor"
+  runtime       = "python3.12"
+  handler       = "handler_emergency.lambda_handler"
+  role          = aws_iam_role.lambda_role.arn
+  filename      = "${path.module}/lambda_emergency.zip"
   timeout       = 30
 
   environment {
@@ -188,15 +205,74 @@ resource "aws_lambda_function" "processor" {
   }
 }
 
-resource "aws_lambda_event_source_mapping" "sqs_to_processor" {
-  event_source_arn                   = aws_sqs_queue.events_queue.arn
-  function_name                      = aws_lambda_function.processor.arn
+resource "aws_lambda_event_source_mapping" "sqs_to_emergency" {
+  event_source_arn                   = aws_sqs_queue.emergency_queue.arn
+  function_name                      = aws_lambda_function.emergency_processor.arn
   batch_size                         = 10
   maximum_batching_window_in_seconds = 0
   enabled                            = true
 
   scaling_config {
     maximum_concurrency = 6
+  }
+}
+
+resource "aws_lambda_function" "position_processor" {
+  function_name = "position_events_processor"
+  runtime       = "python3.12"
+  handler       = "handler_position.lambda_handler"
+  role          = aws_iam_role.lambda_role.arn
+  filename      = "${path.module}/lambda_position.zip"
+  timeout       = 30
+
+  environment {
+    variables = {
+      DYNAMO_TABLE_NAME = aws_dynamodb_table.event_logs.name
+    }
+  }
+}
+
+resource "aws_lambda_event_source_mapping" "sqs_to_position" {
+  event_source_arn                   = aws_sqs_queue.position_queue.arn
+  function_name                      = aws_lambda_function.position_processor.arn
+  batch_size                         = 10
+  maximum_batching_window_in_seconds = 0
+  enabled                            = true
+
+  scaling_config {
+    maximum_concurrency = 6
+  }
+}
+
+# ===================================================================================
+# LAMBDA: RETRY PROCESSOR
+# ===================================================================================
+
+resource "aws_lambda_function" "retry_processor" {
+  function_name = "retry_events_processor"
+  runtime       = "python3.12"
+  handler       = "handler_retry.lambda_handler"
+  role          = aws_iam_role.lambda_role.arn
+  filename      = "${path.module}/lambda_retry.zip"
+  timeout       = 30
+
+  environment {
+    variables = {
+      EMERGENCY_QUEUE_URL = aws_sqs_queue.emergency_queue.url
+      POSITION_QUEUE_URL  = aws_sqs_queue.position_queue.url
+    }
+  }
+}
+
+resource "aws_lambda_event_source_mapping" "sqs_to_retry" {
+  event_source_arn                   = aws_sqs_queue.retry_queue.arn
+  function_name                      = aws_lambda_function.retry_processor.arn
+  batch_size                         = 10
+  maximum_batching_window_in_seconds = 10
+  enabled                            = true
+
+  scaling_config {
+    maximum_concurrency = 2
   }
 }
 
@@ -210,7 +286,7 @@ resource "aws_cloudwatch_log_group" "apigw_access_logs" {
 }
 
 resource "aws_apigatewayv2_api" "http_api" {
-  name          = "emergency-events-api"
+  name          = "vehicle-events-api"
   protocol_type = "HTTP"
 }
 
@@ -262,4 +338,3 @@ resource "aws_apigatewayv2_stage" "prod" {
     throttling_burst_limit = 2000
   }
 }
-
