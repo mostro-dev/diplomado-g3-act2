@@ -61,7 +61,7 @@ export default function () {
   const headers = { "Content-Type": "application/json" };
 
   const res = http.post(
-    "https://0rmjxymg93.execute-api.us-east-1.amazonaws.com/prod/event-notification",
+    "https://0llcabnqu0.execute-api.us-east-1.amazonaws.com/prod/event-notification",
     payload,
     { headers }
   );

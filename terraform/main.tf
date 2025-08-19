@@ -14,9 +14,9 @@ provider "aws" {
 
 data "aws_caller_identity" "current" {}
 
-# ===================================================================================
-# IAM ROLES
-# ===================================================================================
+# ============================================================
+# IAM ROLE para Lambda con permisos básicos + SES + SQS + DynamoDB
+# ============================================================
 
 resource "aws_iam_role" "lambda_role" {
   name = "lambda_vehicle_role"
@@ -31,19 +31,21 @@ resource "aws_iam_role" "lambda_role" {
   })
 }
 
+# Permisos básicos de Lambda
 resource "aws_iam_role_policy_attachment" "lambda_basic" {
   role       = aws_iam_role.lambda_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+# Permisos SES para enviar correos
 resource "aws_iam_role_policy_attachment" "lambda_ses" {
   role       = aws_iam_role.lambda_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSESFullAccess"
 }
 
-# ===================================================================================
-# SQS
-# ===================================================================================
+# ============================================================
+# SQS QUEUES
+# ============================================================
 
 resource "aws_sqs_queue" "emergency_queue" {
   name                       = "emergency-events"
@@ -63,13 +65,13 @@ resource "aws_sqs_queue" "retry_queue" {
   message_retention_seconds  = 86400
 }
 
-# ===================================================================================
-# IAM POLICIES for SQS
-# ===================================================================================
+# ============================================================
+# IAM Policies SQS
+# ============================================================
 
 resource "aws_iam_policy" "sqs_send_policy" {
   name        = "lambda_sqs_send_policy"
-  description = "Allow Lambda Intake & Retry Processor to send messages to SQS"
+  description = "Permite a Lambdas enviar mensajes a las colas SQS"
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [{
@@ -91,16 +93,12 @@ resource "aws_iam_role_policy_attachment" "lambda_sqs_send_attach" {
 
 resource "aws_iam_policy" "sqs_receive_policy" {
   name        = "lambda_sqs_receive_policy"
-  description = "Allow Lambda Processors to read messages from SQS"
+  description = "Permite a Lambdas recibir mensajes de SQS"
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [{
       Effect = "Allow",
-      Action = [
-        "sqs:ReceiveMessage",
-        "sqs:DeleteMessage",
-        "sqs:GetQueueAttributes"
-      ],
+      Action = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
       Resource = [
         aws_sqs_queue.emergency_queue.arn,
         aws_sqs_queue.position_queue.arn,
@@ -115,9 +113,9 @@ resource "aws_iam_role_policy_attachment" "lambda_sqs_receive_attach" {
   policy_arn = aws_iam_policy.sqs_receive_policy.arn
 }
 
-# ===================================================================================
-# DYNAMODB TABLE
-# ===================================================================================
+# ============================================================
+# DYNAMODB TABLE para logs de eventos
+# ============================================================
 
 resource "aws_dynamodb_table" "event_logs" {
   name         = "vehicle_event_logs"
@@ -143,16 +141,12 @@ resource "aws_dynamodb_table" "event_logs" {
 
 resource "aws_iam_policy" "dynamodb_write_policy" {
   name        = "lambda_dynamodb_write_policy"
-  description = "Allow Lambda Processors to write logs to DynamoDB"
+  description = "Permite a Lambdas escribir logs en DynamoDB"
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [{
-      Effect = "Allow",
-      Action = [
-        "dynamodb:PutItem",
-        "dynamodb:UpdateItem",
-        "dynamodb:GetItem"
-      ],
+      Effect   = "Allow",
+      Action   = ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:GetItem"],
       Resource = aws_dynamodb_table.event_logs.arn
     }]
   })
@@ -163,10 +157,11 @@ resource "aws_iam_role_policy_attachment" "lambda_dynamodb_write_attach" {
   policy_arn = aws_iam_policy.dynamodb_write_policy.arn
 }
 
-# ===================================================================================
-# LAMBDA: INTAKE
-# ===================================================================================
+# ============================================================
+# LAMBDAS
+# ============================================================
 
+# Intake Lambda
 resource "aws_lambda_function" "intake" {
   function_name = "vehicle_events_intake"
   runtime       = "python3.12"
@@ -184,10 +179,7 @@ resource "aws_lambda_function" "intake" {
   }
 }
 
-# ===================================================================================
-# LAMBDAS: PROCESSORS
-# ===================================================================================
-
+# Emergency Processor Lambda
 resource "aws_lambda_function" "emergency_processor" {
   function_name = "emergency_events_processor"
   runtime       = "python3.12"
@@ -205,6 +197,7 @@ resource "aws_lambda_function" "emergency_processor" {
   }
 }
 
+# Ajustamos concurrencia para no superar 10 instancias totales
 resource "aws_lambda_event_source_mapping" "sqs_to_emergency" {
   event_source_arn                   = aws_sqs_queue.emergency_queue.arn
   function_name                      = aws_lambda_function.emergency_processor.arn
@@ -213,10 +206,11 @@ resource "aws_lambda_event_source_mapping" "sqs_to_emergency" {
   enabled                            = true
 
   scaling_config {
-    maximum_concurrency = 6
+    maximum_concurrency = 4
   }
 }
 
+# Position Processor Lambda
 resource "aws_lambda_function" "position_processor" {
   function_name = "position_events_processor"
   runtime       = "python3.12"
@@ -240,14 +234,11 @@ resource "aws_lambda_event_source_mapping" "sqs_to_position" {
   enabled                            = true
 
   scaling_config {
-    maximum_concurrency = 6
+    maximum_concurrency = 3
   }
 }
 
-# ===================================================================================
-# LAMBDA: RETRY PROCESSOR
-# ===================================================================================
-
+# Retry Processor Lambda
 resource "aws_lambda_function" "retry_processor" {
   function_name = "retry_events_processor"
   runtime       = "python3.12"
@@ -279,9 +270,9 @@ resource "aws_lambda_event_source_mapping" "sqs_to_retry" {
   }
 }
 
-# ===================================================================================
-# API GATEWAY + LOGGING
-# ===================================================================================
+# ============================================================
+# API GATEWAY
+# ============================================================
 
 resource "aws_cloudwatch_log_group" "apigw_access_logs" {
   name              = "/aws/apigateway/${aws_apigatewayv2_api.http_api.name}-access"
